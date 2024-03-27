@@ -7,20 +7,6 @@ import (
 	"log"
 )
 
-//type ResponseFunction func(w http.ResponseWriter, r *http.Request)
-//
-//const TableInitQuery = `
-//	CREATE TABLE IF NOT EXISTS users (
-//	    id INTEGER PRIMARY KEY AUTOINCREMENT,
-//	    username TEXT NOT NULL,
-//	    password TEXT NOT NULL
-//	)
-//`
-//
-//const InitAdminQuery = `
-//	INSERT INTO users (username, password) VALUES ('admin', 'admin');
-//`
-
 func main() {
 
 	open, err := sql.Open("sqlite3", "./meta.db")

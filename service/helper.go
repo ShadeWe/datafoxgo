@@ -27,6 +27,17 @@ func (*RouteHandler) setDefaultHeaders(handler ResponseFunction) ResponseFunctio
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS,PUT")
 		w.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(200)
+			json.NewEncoder(w).Encode(Response{
+				Code:    200,
+				Message: "",
+				Data:    "",
+			})
+			return
+		}
+
 		handler(w, r)
 	}
 }
