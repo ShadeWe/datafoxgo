@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	Salt = "!@ABC)23"
-
-	BarChartType = 1
+	Salt           = "!@ABC)23"
+	BarChartType   = 1
+	TimeseriesType = 2
 )
 
 type ResponseFunction func(w http.ResponseWriter, r *http.Request)
@@ -32,6 +32,9 @@ func (h *RouteHandler) Run() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/login", h.setDefaultHeaders(h.login))
 	mux.HandleFunc("/get-charts", h.setDefaultHeaders(h.charts))
+	mux.HandleFunc("/get-charts/{table}", h.setDefaultHeaders(h.chart))
+	mux.HandleFunc("/create", h.setDefaultHeaders(h.create))
+	mux.HandleFunc("/fill", h.setDefaultHeaders(h.fill))
 
 	err := http.ListenAndServe(":3333", mux)
 	if err != nil {
@@ -40,6 +43,111 @@ func (h *RouteHandler) Run() error {
 	}
 
 	return nil
+}
+
+func (h *RouteHandler) create(w http.ResponseWriter, r *http.Request) {
+
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		panic(err)
+	}
+
+	var info CreateChart
+	err = json.Unmarshal(raw, &info)
+
+	var userId int
+	err = h.db.QueryRow("SELECT id FROM users WHERE username = $1 AND password = $2", info.User.Username, info.User.Token).Scan(&userId)
+	if err != nil || userId == 0 {
+		h.response(w, 500, "Incorrect user or password, try again.", nil)
+		return
+	}
+
+	switch info.Data.BarType {
+	case BarChartType:
+
+		stmt, err := h.db.Begin()
+		if err != nil {
+			return
+		}
+		defer stmt.Rollback()
+
+		metaRaw, _ := json.Marshal(ChartMeta{
+			X:   info.Data.XAxisColumnName,
+			Y:   info.Data.YAxisColumnName,
+			Agg: info.Data.YAxisColumnAgg,
+		})
+
+		_, err = stmt.Exec("INSERT INTO charts_meta (user_id, chart_type, chart_table_name, meta) VALUES ($1,$2,$3,$4)", userId, BarChartType, info.Data.TableName, metaRaw)
+		if err != nil {
+			h.response(w, 500, "Incorrect user or password, try again.", nil)
+		}
+
+		query := fmt.Sprintf("CREATE TABLE %s (%s TEXT not null, %s %s not null);",
+			info.Data.TableName,
+			info.Data.XAxisColumnName,
+			info.Data.YAxisColumnName,
+			info.Data.YAxisColumnType,
+		)
+
+		_, err = stmt.Exec(query)
+		if err != nil {
+			return
+		}
+
+		err = stmt.Commit()
+		if err != nil {
+			return
+		}
+
+		break
+	default:
+
+		break
+	}
+}
+
+func (h *RouteHandler) chart(w http.ResponseWriter, r *http.Request) {
+
+	var table = r.PathValue("table")
+
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		panic(err)
+	}
+
+	var info GetChartStruct
+	err = json.Unmarshal(raw, &info)
+	if err != nil {
+		h.response(w, 500, "An error occurred during authentication", nil)
+		return
+	}
+
+	var meta ChartsInfo
+	var metaRaw []byte
+	h.db.QueryRow(`
+		SELECT chart_type, meta, chart_table_name FROM charts_meta 
+		WHERE chart_table_name = $1 
+		AND user_id = (SELECT id FROM users WHERE password = $2)
+	`, table, info.Token).Scan(&meta.ChartType, &metaRaw, &meta.ChartTableName)
+
+	err = json.Unmarshal(metaRaw, &meta.ChartMeta)
+	if err != nil {
+		h.response(w, 500, "An error occurred during getting data", nil)
+		return
+	}
+
+	if meta.ChartType == 0 {
+		h.response(w, 500, "No access for the table: "+table, nil)
+		return
+	}
+
+	object, err := h.getChartData(meta, info.Payload)
+	if err != nil {
+		h.response(w, 500, "An error occurred during getting data", nil)
+		return
+	}
+
+	h.response(w, 200, "success", object)
 }
 
 func (h *RouteHandler) charts(w http.ResponseWriter, r *http.Request) {
@@ -62,7 +170,7 @@ func (h *RouteHandler) charts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query, err := h.db.Query(`
-		SELECT chart_type, chart_table_name FROM charts_meta
+		SELECT chart_type, chart_table_name, meta FROM charts_meta
 		WHERE user_id = (SELECT id FROM users WHERE password = $1 LIMIT 1)
 	`, info.Token)
 	if err != nil {
@@ -70,50 +178,20 @@ func (h *RouteHandler) charts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var charts = make([]ChartsMeta, 0)
+	var charts = make([]ChartsInfo, 0)
 	for query.Next() {
-		var chart ChartsMeta
-		err := query.Scan(&chart.ChartType, &chart.ChartTableName)
+		var chart ChartsInfo
+		var metaRaw []byte
+		err := query.Scan(&chart.ChartType, &chart.ChartTableName, &metaRaw)
 		if err != nil {
 			h.response(w, 500, "An error occurred getting login and password from income data", nil)
 			return
 		}
-		charts = append(charts, chart)
-	}
-
-	for key, chartData := range charts {
-
-		switch chartData.ChartType {
-		case BarChartType:
-
-			rows, err := h.db.Query(fmt.Sprintf("SELECT x_axis, SUM(y_axis) FROM %s GROUP BY x_axis", chartData.ChartTableName))
-			if err != nil {
-				return
-			}
-
-			var barChartData = make(map[string]int)
-
-			for rows.Next() {
-				var x string
-				var y int
-				err := rows.Scan(&x, &y)
-				if err != nil {
-					return
-				}
-				barChartData[x] = y
-			}
-
-			if len(barChartData) == 0 {
-				break
-			}
-
-			chartData.BarChartData = barChartData
-			charts[key] = chartData
-
-		default:
-			fmt.Println("default")
+		err = json.Unmarshal(metaRaw, &chart.ChartMeta)
+		if err != nil {
+			return
 		}
-
+		charts = append(charts, chart)
 	}
 
 	h.response(w, 200, "", charts)
