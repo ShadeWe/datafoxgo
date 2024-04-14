@@ -14,15 +14,16 @@ func (h *RouteHandler) fill(w http.ResponseWriter, r *http.Request) {
 		panic(err)
 	}
 
-	var info BarChartFill
+	var info ChartFill
 	err = json.Unmarshal(raw, &info)
 	if err != nil {
 		h.response(w, 500, "An error occurred during authentication", nil)
 		return
 	}
 
+	var chartType int
 	var metaRaw []byte
-	err = h.db.QueryRow("SELECT meta FROM charts_meta WHERE chart_table_name = $1", info.Table).Scan(&metaRaw)
+	err = h.db.QueryRow("SELECT chart_type, meta FROM charts_meta WHERE chart_table_name = $1", info.Table).Scan(&chartType, &metaRaw)
 	if err != nil {
 		return
 	}

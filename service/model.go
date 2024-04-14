@@ -48,23 +48,27 @@ type ChartMeta struct {
 	Agg string `json:"agg"`
 }
 
-type BarChartFill struct {
-	Table string `json:"table"`
-	Tag   string `json:"tag"`
-	Value int    `json:"value"`
+type ChartFill struct {
+	Table     string `json:"table"`
+	Tag       string `json:"tag"`
+	Value     int    `json:"value"`
+	Timestamp int    `json:"timestamp,omitempty"`
 }
 
-// ---
+type DoubleUnit struct {
+	X string  `json:"x"`
+	Y float64 `json:"y"`
+}
 
 type BarUnit struct {
 	X string `json:"x"`
-	Y int    `json:"y"`
+	Y int64  `json:"y"`
 }
 
 type BarChartStruct struct {
-	TableName string    `json:"table_name"`
-	LabelName string    `json:"label_name"`
-	Data      []BarUnit `json:"data"`
+	TableName string        `json:"table_name"`
+	LabelName string        `json:"label_name"`
+	Data      []interface{} `json:"data"`
 }
 
 type TimeSeriesUnit struct {
@@ -84,11 +88,11 @@ type Payload struct {
 }
 
 func (g Payload) From() int64 {
-	return g.StartDate / 1000
+	return g.StartDate
 }
 
 func (g Payload) To() int64 {
-	return g.EndDate / 1000
+	return g.EndDate
 }
 
 type GetChartStruct struct {

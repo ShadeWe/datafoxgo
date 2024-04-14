@@ -14,6 +14,7 @@ const (
 	Salt           = "!@ABC)23"
 	BarChartType   = 1
 	TimeseriesType = 2
+	PieChartType   = 3
 )
 
 type ResponseFunction func(w http.ResponseWriter, r *http.Request)
@@ -34,6 +35,7 @@ func (h *RouteHandler) Run() error {
 	mux.HandleFunc("/get-charts", h.setDefaultHeaders(h.charts))
 	mux.HandleFunc("/get-charts/{table}", h.setDefaultHeaders(h.chart))
 	mux.HandleFunc("/create", h.setDefaultHeaders(h.create))
+	mux.HandleFunc("/delete/{table}", h.setDefaultHeaders(h.delete))
 	mux.HandleFunc("/fill", h.setDefaultHeaders(h.fill))
 
 	err := http.ListenAndServe(":3333", mux)
@@ -43,6 +45,49 @@ func (h *RouteHandler) Run() error {
 	}
 
 	return nil
+}
+
+func (h *RouteHandler) delete(w http.ResponseWriter, r *http.Request) {
+	var table = r.PathValue("table")
+	var credits Auth
+
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		h.response(w, 500, "Error when reading body, try again.", nil)
+		return
+	}
+
+	err = json.Unmarshal(raw, &credits)
+	if err != nil {
+		h.response(w, 500, "Error when reading credits, try again.", nil)
+		return
+	}
+
+	var userId int
+	err = h.db.QueryRow("SELECT id FROM users WHERE username = $1 AND password = $2", credits.Username, credits.Token).Scan(&userId)
+	if err != nil || userId == 0 {
+		h.response(w, 500, "Incorrect user or password, try again.", nil)
+		return
+	}
+
+	stmt, err := h.db.Begin()
+	defer stmt.Rollback()
+	_, err = stmt.Exec(fmt.Sprintf("DROP TABLE %s", table))
+	if err != nil {
+		return
+	}
+
+	_, err = stmt.Exec("DELETE FROM charts_meta WHERE user_id = $1 AND chart_table_name = $2", userId, table)
+	if err != nil {
+		return
+	}
+
+	err = stmt.Commit()
+	if err != nil {
+		return
+	}
+
+	h.response(w, 200, "", nil)
 }
 
 func (h *RouteHandler) create(w http.ResponseWriter, r *http.Request) {
@@ -62,25 +107,27 @@ func (h *RouteHandler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	stmt, err := h.db.Begin()
+	if err != nil {
+		return
+	}
+	defer stmt.Rollback()
+
+	metaData := ChartMeta{
+		X:   info.Data.XAxisColumnName,
+		Y:   info.Data.YAxisColumnName,
+		Agg: info.Data.YAxisColumnAgg,
+	}
+
+	metaRaw, _ := json.Marshal(metaData)
+
+	_, err = stmt.Exec("INSERT INTO charts_meta (user_id, chart_type, chart_table_name, meta) VALUES ($1,$2,$3,$4)", userId, info.Data.BarType, info.Data.TableName, metaRaw)
+	if err != nil {
+		h.response(w, 500, "Incorrect user or password, try again.", nil)
+	}
+
 	switch info.Data.BarType {
-	case BarChartType:
-
-		stmt, err := h.db.Begin()
-		if err != nil {
-			return
-		}
-		defer stmt.Rollback()
-
-		metaRaw, _ := json.Marshal(ChartMeta{
-			X:   info.Data.XAxisColumnName,
-			Y:   info.Data.YAxisColumnName,
-			Agg: info.Data.YAxisColumnAgg,
-		})
-
-		_, err = stmt.Exec("INSERT INTO charts_meta (user_id, chart_type, chart_table_name, meta) VALUES ($1,$2,$3,$4)", userId, BarChartType, info.Data.TableName, metaRaw)
-		if err != nil {
-			h.response(w, 500, "Incorrect user or password, try again.", nil)
-		}
+	case BarChartType, PieChartType:
 
 		query := fmt.Sprintf("CREATE TABLE %s (%s TEXT not null, %s %s not null);",
 			info.Data.TableName,
@@ -100,10 +147,35 @@ func (h *RouteHandler) create(w http.ResponseWriter, r *http.Request) {
 		}
 
 		break
-	default:
+	case TimeseriesType:
+
+		query := fmt.Sprintf("CREATE TABLE %s (timestamp DATETIME not null, %s TEXT not null, %s %s not null);",
+			info.Data.TableName,
+			info.Data.XAxisColumnName,
+			info.Data.YAxisColumnName,
+			info.Data.YAxisColumnType,
+		)
+
+		_, err = stmt.Exec(query)
+		if err != nil {
+			return
+		}
+
+		err = stmt.Commit()
+		if err != nil {
+			return
+		}
 
 		break
+	default:
+		break
 	}
+
+	h.response(w, 200, "", ChartsInfo{
+		ChartType:      info.Data.BarType,
+		ChartTableName: info.Data.TableName,
+		ChartMeta:      metaData,
+	})
 }
 
 func (h *RouteHandler) chart(w http.ResponseWriter, r *http.Request) {
